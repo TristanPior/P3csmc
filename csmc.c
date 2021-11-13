@@ -45,6 +45,7 @@ static int nTotalTutored;
 // Mutex lock for modifying chairsQueue and queueInput
 pthread_mutex_t chairsQueue_mutex;
 pthread_mutex_t queueInput_mutex;
+pthread_mutex_t nTutored_mutex;
 // Semaphore for waking up tutors and waking up coordinator
 sem_t tutor_is_waiting;
 sem_t coordinator_is_waiting;
@@ -170,7 +171,7 @@ coordinatorThread(void *xa) {
         totalRequests++;
         // pthread_mutex_lock(&queueInput_mutex);
         if(queueInput[0] == NULL) {
-            pthread_mutex_unlock(&queueInput_mutex);
+            // pthread_mutex_unlock(&queueInput_mutex);
             continue;
         }
         // pthread_mutex_unlock(&queueInput_mutex);
@@ -226,13 +227,18 @@ tutorThread(void *xa) {
                 if(DEBUG) printf("Tutor %ld popFromQueue failed\n", id);
             #endif
         }
-        pthread_mutex_unlock(&chairsQueue_mutex);
         nWaitingStudents--;
+        pthread_mutex_unlock(&chairsQueue_mutex);
         stu->currentTutor = id;
+        stu->priority++;
+        pthread_mutex_lock(&nTutored_mutex);
         nBeingTutored++;
+        pthread_mutex_unlock(&nTutored_mutex);
         sleep(TUTORING_TIME);
+        pthread_mutex_lock(&nTutored_mutex);
         nBeingTutored--;
         nTotalTutored++;
+        pthread_mutex_unlock(&nTutored_mutex);
         printf("T: Student %ld tutored by Tutor %ld. Students tutored now = %d. Total sessions tutored = %d.\n", stu->id, id, nBeingTutored, nTotalTutored);
     }
     return NULL;
@@ -261,7 +267,7 @@ studentThread(void *xa) {
         int i;
         pthread_mutex_lock(&queueInput_mutex);
         if(nEmptyChairs == 0) {
-            // printf("S: Student %ld found no empty chair. Will try again later.\n", id);
+            printf("S: Student %ld found no empty chair. Will try again later.\n", id);
             pthread_mutex_unlock(&queueInput_mutex);
             continue;
         }
@@ -310,6 +316,7 @@ int main(int argc, char *argv[]) {
     // Initialize mutexes
     pthread_mutex_init(&chairsQueue_mutex, NULL);
     pthread_mutex_init(&queueInput_mutex, NULL);
+    pthread_mutex_init(&nTutored_mutex, NULL);
 
     // Malloc threads
     students = malloc(sizeof(struct student) * nstudents);
