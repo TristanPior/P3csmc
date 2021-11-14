@@ -56,6 +56,7 @@ static int synchronize;
 
 // Helper function used by the coordinator thread to add a student to the queue
 // Assumes that there is room to add a student to the queue (checked in student thread via nEmptyChairs)
+// Assumes calling function already has a lock on chairsQueue_mutex
 // Takes in a pointer to the student as an argument
 // Returns 0 on success
 int
@@ -63,7 +64,6 @@ addToQueue(struct student *stu) {
     int stuPriority = stu->priority;
     int insertIndex = -1;
     int i;
-    pthread_mutex_lock(&chairsQueue_mutex);
     // Find index to insert at
     for(i = 0; i < nchairs; i++) {
         if(chairsQueue[i] == NULL) {
@@ -89,7 +89,6 @@ addToQueue(struct student *stu) {
     // Insert the student to the queue
     chairsQueue[insertIndex] = stu;
     nWaitingStudents++;
-    pthread_mutex_unlock(&chairsQueue_mutex);
     return 0;
 }
 
@@ -114,8 +113,10 @@ popFromQueue() {
         chairsQueue[i] = chairsQueue[i + 1];
     }
     chairsQueue[i] = NULL;
-    nEmptyChairs++;
     // pthread_mutex_unlock(&chairsQueue_mutex);
+    pthread_mutex_lock(&queueInput_mutex);
+    nEmptyChairs++;
+    pthread_mutex_unlock(&queueInput_mutex);
     return 0;
 }
 
@@ -177,17 +178,19 @@ coordinatorThread(void *xa) {
         // pthread_mutex_unlock(&queueInput_mutex);
         long stuID = queueInput[0]->id;
         int stuPriority = queueInput[0]->priority;
+        pthread_mutex_lock(&chairsQueue_mutex);
         if(addToQueue(queueInput[0])) {
             // Insert failed
             #ifdef DEBUG
-                if(DEBUG) printf("Coordinator addToQueue failed\n");
+                if(DEBUG) printf("ERROR: Coordinator addToQueue failed\n");
             #endif
         }
         printf("C: Student %ld with priority %d added to the queue. Waiting students now = %d. Total requests = %d.\n", stuID, stuPriority, nWaitingStudents, totalRequests);
+        pthread_mutex_unlock(&chairsQueue_mutex);
         if(popFromInputQueue()) {
             // Insert failed
             #ifdef DEBUG
-                if(DEBUG) printf("Coordinator popFromInputQueue failed\n");
+                if(DEBUG) printf("ERROR: Coordinator popFromInputQueue failed\n");
             #endif
         }
         sem_post(&tutor_is_waiting);
@@ -218,28 +221,28 @@ tutorThread(void *xa) {
         }
         pthread_mutex_lock(&chairsQueue_mutex);
         if(chairsQueue[0] == NULL) {
-            pthread_mutex_lock(&chairsQueue_mutex);
+            pthread_mutex_unlock(&chairsQueue_mutex);
             continue;
         }
         struct student *stu = chairsQueue[0];
+        nWaitingStudents--;
         if(popFromQueue()) {
             #ifdef DEBUG
-                if(DEBUG) printf("Tutor %ld popFromQueue failed\n", id);
+                if(DEBUG) printf("ERROR: Tutor %ld popFromQueue failed\n", id);
             #endif
         }
-        nWaitingStudents--;
         pthread_mutex_unlock(&chairsQueue_mutex);
-        stu->currentTutor = id;
-        stu->priority++;
         pthread_mutex_lock(&nTutored_mutex);
         nBeingTutored++;
         pthread_mutex_unlock(&nTutored_mutex);
+        stu->currentTutor = id;
+        stu->priority++;
         sleep(TUTORING_TIME);
         pthread_mutex_lock(&nTutored_mutex);
         nBeingTutored--;
         nTotalTutored++;
-        pthread_mutex_unlock(&nTutored_mutex);
         printf("T: Student %ld tutored by Tutor %ld. Students tutored now = %d. Total sessions tutored = %d.\n", stu->id, id, nBeingTutored, nTotalTutored);
+        pthread_mutex_unlock(&nTutored_mutex);
     }
     return NULL;
 }
@@ -264,19 +267,25 @@ studentThread(void *xa) {
     while(timeshelped < nseekhelp) {
         float programmingTime = MIN_PROGRAMMING_TIME + ((float)rand() / (float)RAND_MAX) * (MAX_PROGRAMMING_TIME - MIN_PROGRAMMING_TIME);
         sleep(programmingTime);
-        int i;
         pthread_mutex_lock(&queueInput_mutex);
-        if(nEmptyChairs == 0) {
-            printf("S: Student %ld found no empty chair. Will try again later.\n", id);
-            pthread_mutex_unlock(&queueInput_mutex);
-            continue;
-        }
         // Find an empty chair
+        int i;
         for(i = 0; i < nchairs; i++) {
             if(queueInput[i] == NULL) {
                 break;
             }
         }
+        // Check for no chair found
+        if(nEmptyChairs == 0 || i == nchairs) {
+            pthread_mutex_unlock(&queueInput_mutex);
+            printf("S: Student %ld found no empty chair. Will try again later.\n", id);
+            continue;
+        }
+        #ifdef DEBUG
+            if(DEBUG) {
+                printf("Empty Chair Index: %d\n", i);
+            }
+        #endif
         queueInput[i] = &students[id];
         nEmptyChairs--;
         printf("S: Student %ld takes a seat. Empty chairs = %d.\n", id, nEmptyChairs);
@@ -366,7 +375,7 @@ int main(int argc, char *argv[]) {
     }
     pthread_join(*coordinator, NULL);
     #ifdef DEBUG
-        if(DEBUG) printf("Coordinator terminated");
+        if(DEBUG) printf("Coordinator terminated\n");
     #endif
     return 0;
 }
